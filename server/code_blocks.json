@@ -1,0 +1,28 @@
+{
+  "code_blocks": [
+    {
+      "id": "1",
+      "title": "Async case",
+      "template": "async function example() {\n  // Your code here\n}",
+      "solution": "async function example() {\n  return await Promise.resolve('success');\n}"
+    },
+    {
+      "id": "2",
+      "title": "Array methods",
+      "template": "const numbers = [1, 2, 3, 4, 5];\n// Your code here",
+      "solution": "const numbers = [1, 2, 3, 4, 5];\nconst doubled = numbers.map(n => n * 2);"
+    },
+    {
+      "id": "3",
+      "title": "Promise chain",
+      "template": "// Create a promise chain here",
+      "solution": "Promise.resolve(1)\n  .then(x => x + 1)\n  .then(x => x * 2);"
+    },
+    {
+      "id": "4",
+      "title": "Event handling",
+      "template": "// Add event listener here",
+      "solution": "document.addEventListener('click', () => {\n  console.log('clicked!');\n});"
+    }
+  ]
+}
