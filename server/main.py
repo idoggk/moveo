@@ -160,12 +160,16 @@ async def cleanup_room(room_id: str, websocket: WebSocket = None):
             active_connections[room_id].pop(websocket, None)
             logger.info(f"Removed {role} websocket connection from room {room_id}")
             
-            # If this was the mentor, clean up the room
+            # If this was the mentor, clean up the room and notify all students
             if role == "mentor":
+                # First notify all students
                 await broadcast_to_room(room_id, {
-                    "type": "mentorLeft"
+                    "type": "mentorLeft",
+                    "message": "Mentor has left the room"
                 })
-                # Clear the room entirely when mentor leaves
+                logger.info(f"Notified all students in room {room_id} about mentor leaving")
+                
+                # Then clean up the room
                 active_connections[room_id].clear()
                 if room_id in current_editor:
                     del current_editor[room_id]
@@ -373,7 +377,8 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, client_id: str)
                 logger.info(f"Received message in room {room_id}: {message}")
                 
                 if message["type"] == "mentorLeaving" and role == "mentor":
-                    # Clean up the room when mentor explicitly leaves
+                    logger.info(f"Mentor {client_id} is leaving room {room_id}")
+                    # This will trigger notifications and cleanup
                     await cleanup_room(room_id, websocket)
                     break
                 
@@ -382,17 +387,22 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, client_id: str)
                     logger.info(f"Broadcasted code update from {role}")
                 
                 elif message["type"] == "requestEdit" and role == "student":
-                    if room_id in current_editor and current_editor[room_id] != websocket:
-                        current_editor[room_id] = websocket
-                        await broadcast_to_room(room_id, {
-                            "type": "editorChange",
-                            "canEdit": False
-                        })
-                        await send_message(websocket, {
-                            "type": "editorChange",
-                            "canEdit": True
-                        })
-                        logger.info(f"Changed editor in room {room_id}")
+                    logger.info(f"Edit request from student {client_id} in room {room_id}")
+                    # Update current editor
+                    current_editor[room_id] = websocket
+                    # Notify previous editor they can't edit anymore
+                    for ws, r in active_connections[room_id].items():
+                        if r == "student" and ws != websocket:
+                            await send_message(ws, {
+                                "type": "editorChange",
+                                "canEdit": False
+                            })
+                    # Notify new editor they can edit
+                    await send_message(websocket, {
+                        "type": "editorChange",
+                        "canEdit": True
+                    })
+                    logger.info(f"Changed editor in room {room_id} to client {client_id}")
 
             except WebSocketDisconnect:
                 logger.info(f"WebSocket disconnected in room {room_id}")

@@ -24,22 +24,25 @@ const CodeBlock = () => {
   const navigate = useNavigate();
 
   const handleBackToLobby = () => {
-    if (role === "mentor") {
-      if (ws.current) {
+    if (ws.current) {
+      if (role === "mentor") {
+        console.log("Mentor leaving - sending notification to server");
         ws.current.send(
           JSON.stringify({
             type: "mentorLeaving",
             blockId: blockId,
           })
         );
-        ws.current.close();
       }
-      setCodeBlock(null);
-      setStudentCount(0);
-      setCanEdit(false);
-      setIsConnected(false);
-      navigate("/");
+      // Close with code 1000 to indicate clean closure
+      ws.current.close(1000, "User leaving");
+      ws.current = null;
     }
+    setCodeBlock(null);
+    setStudentCount(0);
+    setCanEdit(false);
+    setIsConnected(false);
+    navigate("/");
   };
 
   const connectWebSocket = () => {
@@ -53,8 +56,15 @@ const CodeBlock = () => {
       return;
     }
 
-    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-      console.log("WebSocket already connected");
+    // If we already have an open connection, don't create a new one
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      console.log("WebSocket already connected and open");
+      return;
+    }
+
+    // If we have a connection that's closing or in an intermediate state, wait for it
+    if (ws.current && ws.current.readyState !== WebSocket.CLOSED) {
+      console.log("WebSocket connection in progress, waiting...");
       return;
     }
 
@@ -72,28 +82,17 @@ const CodeBlock = () => {
       console.error("WebSocket error:", error);
       setError("Connection error. Attempting to reconnect...");
       setIsConnected(false);
-
-      if (reconnectAttempts.current < maxReconnectAttempts) {
-        console.log(
-          `Reconnect attempt ${
-            reconnectAttempts.current + 1
-          } of ${maxReconnectAttempts}`
-        );
-        setTimeout(() => {
-          reconnectAttempts.current += 1;
-          connectWebSocket();
-        }, 2000);
-      } else {
-        setError(
-          "Unable to connect. Please refresh the page or return to lobby."
-        );
-        console.error("Max reconnection attempts reached");
-      }
     };
 
-    ws.current.onclose = () => {
-      console.log("WebSocket connection closed");
+    ws.current.onclose = (event) => {
+      console.log("WebSocket connection closed", event.code, event.reason);
       setIsConnected(false);
+
+      // Don't reconnect if we're intentionally closing (code 1000)
+      if (event.code === 1000) {
+        console.log("Clean WebSocket closure, not reconnecting");
+        return;
+      }
 
       if (reconnectAttempts.current < maxReconnectAttempts) {
         console.log(
@@ -130,9 +129,22 @@ const CodeBlock = () => {
             setStudentCount(data.count);
             break;
           case "mentorLeft":
-            if (role === "student") {
-              navigate("/");
+            console.log("Mentor left notification received");
+            // Handle mentor leaving regardless of stored role
+            // Clean up state
+            setCodeBlock(null);
+            setStudentCount(0);
+            setCanEdit(false);
+            setIsConnected(false);
+            // Close WebSocket first with clean closure code
+            if (ws.current) {
+              ws.current.close(1000, "Mentor left");
+              ws.current = null;
             }
+            // Clear role and client ID from session storage
+            sessionStorage.clear();
+            // Navigate back to lobby and prevent going back
+            navigate("/", { replace: true });
             break;
           case "editorChange":
             setCanEdit(role === "student" && data.canEdit);
@@ -147,6 +159,8 @@ const CodeBlock = () => {
   };
 
   useEffect(() => {
+    let isActive = true; // Flag to prevent operations after unmount
+
     const fetchCodeBlock = async () => {
       try {
         const response = await axios.get(
@@ -177,28 +191,6 @@ const CodeBlock = () => {
         return false;
       }
 
-      if (!storedRole) {
-        console.log("No stored role, attempting to fetch from server");
-        try {
-          const response = await fetch(
-            `http://localhost:8000/my-role/${clientId}`
-          );
-          if (!response.ok) {
-            throw new Error("Failed to fetch role");
-          }
-          const data = await response.json();
-          console.log("Fetched role from server:", data.role);
-          sessionStorage.setItem("userRole", data.role);
-          setRole(data.role);
-          return true;
-        } catch (err) {
-          console.error("Error fetching role:", err);
-          setError("Failed to verify role. Please return to lobby.");
-          setTimeout(() => navigate("/"), 2000);
-          return false;
-        }
-      }
-
       try {
         const response = await fetch(
           `http://localhost:8000/my-role/${clientId}`
@@ -207,19 +199,11 @@ const CodeBlock = () => {
           throw new Error("Failed to verify role");
         }
         const data = await response.json();
-        console.log("Verifying roles match:", {
-          stored: storedRole,
-          server: data.role,
-        });
-        if (data.role !== storedRole) {
-          console.error("Role mismatch:", {
-            stored: storedRole,
-            server: data.role,
-          });
-          // Update the stored role if it doesn't match
-          sessionStorage.setItem("userRole", data.role);
-          setRole(data.role);
-        }
+
+        // Always update role from server
+        console.log("Setting role from server:", data.role);
+        sessionStorage.setItem("userRole", data.role);
+        setRole(data.role);
         return true;
       } catch (err) {
         console.error("Error verifying role:", err);
@@ -230,20 +214,35 @@ const CodeBlock = () => {
     };
 
     const init = async () => {
+      if (!isActive) return;
+
       const isRoleValid = await verifyRole();
+      if (!isActive) return;
+
       if (isRoleValid) {
         await fetchCodeBlock();
-        connectWebSocket();
+        if (!isActive) return;
+
+        // Only connect WebSocket if we don't have an active connection
+        if (!ws.current || ws.current.readyState === WebSocket.CLOSED) {
+          connectWebSocket();
+        }
       }
     };
 
     init();
 
+    // Cleanup function
     return () => {
+      isActive = false;
+      console.log("Component unmounting - cleaning up");
       if (ws.current) {
-        console.log("Component unmounting, closing WebSocket");
-        ws.current.close();
+        console.log("Closing WebSocket connection");
+        ws.current.close(1000, "Component unmounting");
+        ws.current = null;
       }
+      // Clear any reconnection timeouts
+      reconnectAttempts.current = maxReconnectAttempts;
     };
   }, [blockId, navigate]);
 
@@ -274,6 +273,7 @@ const CodeBlock = () => {
       !canEdit &&
       ws.current?.readyState === WebSocket.OPEN
     ) {
+      console.log("Requesting edit permission");
       ws.current.send(
         JSON.stringify({
           type: "requestEdit",
@@ -294,11 +294,9 @@ const CodeBlock = () => {
     <div className="code-block-container">
       <div className="header-bar">
         <h1>{codeBlock?.title || "Code Block"}</h1>
-        {role === "mentor" && (
-          <button onClick={handleBackToLobby} className="back-to-lobby-btn">
-            Back to Lobby
-          </button>
-        )}
+        <button onClick={handleBackToLobby} className="back-to-lobby-btn">
+          Back to Lobby
+        </button>
       </div>
       <div className="status-bar">
         <div className="role-indicator">
@@ -311,10 +309,20 @@ const CodeBlock = () => {
           )}
         </div>
         <div className="student-count">Students in room: {studentCount}</div>
-        {role === "student" && !canEdit && (
-          <button onClick={requestEdit} className="request-edit-btn">
-            Request to Edit
-          </button>
+        {role === "student" && (
+          <div className="edit-status">
+            {canEdit ? (
+              <span className="can-edit-message">You can edit now</span>
+            ) : (
+              <button
+                onClick={requestEdit}
+                className="request-edit-btn"
+                disabled={!isConnected}
+              >
+                Request to Edit
+              </button>
+            )}
+          </div>
         )}
       </div>
       {role === "student" && (
