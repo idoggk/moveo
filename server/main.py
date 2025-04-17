@@ -1,8 +1,21 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import logging
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import json
 from typing import Dict, List
 import os
+from starlette.websockets import WebSocketState
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('server.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -17,9 +30,25 @@ app.add_middleware(
 
 # Store active connections and their roles
 active_connections: Dict[str, Dict[WebSocket, str]] = {}  # room_id: {websocket: role}
+current_editor: Dict[str, WebSocket] = {}  # room_id: websocket of current editor
+assigned_roles: Dict[str, str] = {}  # client_id: role
+mentor_assigned = False  # Global flag to track if a mentor has been assigned
 
 # Store code blocks
 CODE_BLOCKS_FILE = "code_blocks.json"
+
+# Add to the top with other global variables
+lobby_connections: Dict[WebSocket, str] = {}  # websocket: client_id
+
+@app.on_event("startup")
+async def startup_event():
+    """Reset global state when server starts"""
+    global mentor_assigned, assigned_roles, active_connections, current_editor
+    mentor_assigned = False
+    assigned_roles.clear()
+    active_connections.clear()
+    current_editor.clear()
+    logger.info("Server started - All state reset")
 
 def load_code_blocks():
     if not os.path.exists(CODE_BLOCKS_FILE):
@@ -70,44 +99,312 @@ async def get_code_block(block_id: str):
             return block
     return {"error": "Code block not found"}
 
-@app.websocket("/ws/{room_id}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str):
-    await websocket.accept()
-    
-    # Check if this is the first connection to the room
-    is_first_connection = room_id not in active_connections or not active_connections[room_id]
-    
-    # Initialize room if it doesn't exist
+async def broadcast_to_room(room_id: str, message: dict, exclude_websocket: WebSocket = None):
+    """Helper function to broadcast message to all connections in a room"""
+    if room_id in active_connections:
+        for connection in active_connections[room_id]:
+            if connection != exclude_websocket:
+                try:
+                    if connection.client_state != WebSocketState.DISCONNECTED:
+                        await connection.send_text(json.dumps(message))
+                except Exception as e:
+                    print(f"Error broadcasting to client: {e}")
+
+def get_student_count(room_id: str) -> int:
+    """Helper function to get the number of students in a room"""
     if room_id not in active_connections:
-        active_connections[room_id] = {}
+        return 0
+    return sum(1 for role in active_connections[room_id].values() if role == "student")
+
+async def cleanup_room(room_id: str, websocket: WebSocket = None):
+    """Helper function to clean up a room when needed"""
+    global mentor_assigned
     
-    # Assign role based on whether this is the first connection
-    role = "mentor" if is_first_connection else "student"
-    active_connections[room_id][websocket] = role
+    logger.info(f"\n{'='*50}")
+    logger.info(f"Cleanup Room - Room ID: {room_id}")
+    logger.info(f"Current State:")
+    logger.info(f"  mentor_assigned: {mentor_assigned}")
+    logger.info(f"  assigned_roles: {assigned_roles}")
+    logger.info(f"  active_connections: {[{k: list(v.values())} for k, v in active_connections.items()]}")
     
-    # Send role information to the client
-    await websocket.send_text(json.dumps({
-        "type": "role",
-        "role": role,
-        "studentCount": sum(1 for r in active_connections[room_id].values() if r == "student")
-    }))
+    if room_id in active_connections:
+        if websocket:
+            # Remove specific connection
+            active_connections[room_id].pop(websocket, None)
+            logger.info(f"Removed websocket connection from room {room_id}")
+        
+        # If room is empty, clean it up
+        if not active_connections[room_id]:
+            if room_id in current_editor:
+                del current_editor[room_id]
+            del active_connections[room_id]
+            logger.info(f"Room {room_id} is empty - removed room")
+    
+    logger.info(f"Final State:")
+    logger.info(f"  mentor_assigned: {mentor_assigned}")
+    logger.info(f"  assigned_roles: {assigned_roles}")
+    logger.info(f"  active_connections: {[{k: list(v.values())} for k, v in active_connections.items()]}")
+    logger.info(f"{'='*50}\n")
+
+async def send_message(websocket: WebSocket, message: dict):
+    """Helper function to safely send a message to a WebSocket"""
+    try:
+        if websocket.client_state != WebSocketState.DISCONNECTED:
+            await websocket.send_text(json.dumps(message))
+    except Exception as e:
+        print(f"Error sending message to client: {e}")
+
+@app.get("/assign-role/{client_id}")
+async def assign_role(client_id: str):
+    """Assign a role to a client when they enter the lobby"""
+    global mentor_assigned, assigned_roles
+    
+    logger.info(f"\n{'='*50}")
+    logger.info(f"Role Assignment Request - Client ID: {client_id}")
+    logger.info(f"Current State:")
+    logger.info(f"  mentor_assigned: {mentor_assigned}")
+    logger.info(f"  assigned_roles: {assigned_roles}")
+    
+    # If client already has a role, return it
+    if client_id in assigned_roles:
+        logger.info(f"Client {client_id} already has role: {assigned_roles[client_id]}")
+        return {"role": assigned_roles[client_id]}
+    
+    # Simply check if we have any mentors in assigned_roles
+    current_mentors = sum(1 for role in assigned_roles.values() if role == "mentor")
+    logger.info(f"Current mentor count: {current_mentors}")
+    
+    # Assign role based on whether we have a mentor
+    if current_mentors == 0 and not mentor_assigned:
+        role = "mentor"
+        mentor_assigned = True
+        logger.info(f"No mentors exist - Assigning MENTOR role to {client_id}")
+    else:
+        role = "student"
+        logger.info(f"Mentor exists - Assigning STUDENT role to {client_id}")
+    
+    assigned_roles[client_id] = role
+    logger.info(f"Final State:")
+    logger.info(f"  mentor_assigned: {mentor_assigned}")
+    logger.info(f"  assigned_roles: {assigned_roles}")
+    logger.info(f"{'='*50}\n")
+    
+    return {"role": role}
+
+@app.get("/my-role/{client_id}")
+async def get_role(client_id: str):
+    """Get the role for a specific client"""
+    if client_id not in assigned_roles:
+        raise HTTPException(status_code=404, detail="Role not found")
+    return {"role": assigned_roles[client_id]}
+
+@app.websocket("/ws/{room_id}/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, room_id: str, client_id: str):
+    await websocket.accept()
+    logger.info(f"\n{'='*50}")
+    logger.info(f"WebSocket Connection - Room: {room_id}, Client: {client_id}")
+    logger.info("Current State:")
+    logger.info(f"  assigned_roles: {assigned_roles}")
+    logger.info(f"  active_connections: {[{k: list(v.values())} for k, v in active_connections.items()]}")
     
     try:
+        # Get the pre-assigned role
+        if client_id not in assigned_roles:
+            # If client was a mentor and is reconnecting, restore their role
+            for old_client_id, role in list(assigned_roles.items()):
+                if role == "mentor":
+                    assigned_roles[client_id] = "mentor"
+                    if old_client_id != client_id:
+                        del assigned_roles[old_client_id]
+                    logger.info(f"Restored mentor role for client {client_id}")
+                    break
+            else:
+                logger.warning(f"Client {client_id} not found in assigned_roles - closing connection")
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
+            
+        role = assigned_roles[client_id]
+        logger.info(f"Retrieved role for client {client_id}: {role}")
+        
+        # Initialize room if it doesn't exist
+        if room_id not in active_connections:
+            active_connections[room_id] = {}
+            logger.info(f"Created new room: {room_id}")
+        
+        active_connections[room_id][websocket] = role
+        logger.info(f"Added {role} to room {room_id}")
+
+        # If this is a student and there's no current editor, make them the current editor
+        if role == "student" and room_id not in current_editor:
+            current_editor[room_id] = websocket
+            logger.info(f"Set student as current editor in room {room_id}")
+        
+        # Send initial state to the client
+        initial_state = {
+            "type": "role",
+            "role": role,
+            "studentCount": get_student_count(room_id),
+            "canEdit": role == "mentor" or websocket == current_editor.get(room_id)
+        }
+        await send_message(websocket, initial_state)
+        logger.info(f"Sent initial state to client: {initial_state}")
+        
+        # Notify others about the new student
+        if role == "student":
+            await broadcast_to_room(room_id, {
+                "type": "studentCount",
+                "count": get_student_count(room_id)
+            }, websocket)
+            logger.info(f"Broadcasted new student count: {get_student_count(room_id)}")
+        
         while True:
-            data = await websocket.receive_text()
-            # Broadcast the code update to all other connections in the room
-            for connection in active_connections[room_id]:
-                if connection != websocket:
-                    await connection.send_text(data)
+            try:
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                logger.info(f"Received message in room {room_id}: {message}")
+                
+                if message["type"] == "codeUpdate" and (role == "mentor" or websocket == current_editor.get(room_id)):
+                    await broadcast_to_room(room_id, message, websocket)
+                    logger.info(f"Broadcasted code update from {role}")
+                
+                elif message["type"] == "mentorRedirect" and role == "mentor":
+                    await broadcast_to_room(room_id, {
+                        "type": "redirect",
+                        "blockId": message["blockId"]
+                    }, websocket)
+                    logger.info(f"Mentor initiated redirect to block {message['blockId']}")
+                
+                elif message["type"] == "requestEdit" and role == "student":
+                    if room_id in current_editor and current_editor[room_id] != websocket:
+                        current_editor[room_id] = websocket
+                        await broadcast_to_room(room_id, {
+                            "type": "editorChange",
+                            "canEdit": False
+                        })
+                        await send_message(websocket, {
+                            "type": "editorChange",
+                            "canEdit": True
+                        })
+                        logger.info(f"Changed editor in room {room_id}")
+
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected in room {room_id}")
+                break
+            except Exception as e:
+                logger.error(f"Error handling message in room {room_id}: {e}")
+                continue
+
     except WebSocketDisconnect:
-        # Remove the disconnected connection
-        del active_connections[room_id][websocket]
-        # If mentor disconnects, close the room
-        if not any(role == "mentor" for role in active_connections[room_id].values()):
-            del active_connections[room_id]
-        # If no connections left, remove the room
-        if not active_connections[room_id]:
-            del active_connections[room_id]
+        logger.warning(f"WebSocket disconnected during setup in room {room_id}")
+    except Exception as e:
+        logger.error(f"Error in WebSocket connection for room {room_id}: {e}")
+    finally:
+        # Handle disconnection
+        if room_id in active_connections and websocket in active_connections[room_id]:
+            disconnected_role = active_connections[room_id][websocket]
+            logger.info(f"Cleaning up {disconnected_role} connection in room {room_id}")
+            
+            # If this was the current editor, select a new one
+            if room_id in current_editor and current_editor[room_id] == websocket:
+                students = [ws for ws, r in active_connections[room_id].items() 
+                          if r == "student" and ws != websocket]
+                if students:
+                    current_editor[room_id] = students[0]
+                    await send_message(current_editor[room_id], {
+                        "type": "editorChange",
+                        "canEdit": True
+                    })
+                    logger.info(f"Selected new editor in room {room_id}")
+            
+            # If mentor disconnects, notify all students
+            if disconnected_role == "mentor":
+                await broadcast_to_room(room_id, {
+                    "type": "mentorLeft"
+                })
+                logger.info("Sent mentorLeft notification to students")
+            
+            # Clean up the room
+            await cleanup_room(room_id, websocket)
+            
+            # Update student count for remaining connections
+            if room_id in active_connections:
+                await broadcast_to_room(room_id, {
+                    "type": "studentCount",
+                    "count": get_student_count(room_id)
+                })
+                logger.info(f"Updated student count after disconnect: {get_student_count(room_id)}")
+        
+        logger.info(f"{'='*50}\n")
+
+# When a mentor disconnects, reset the mentor flag
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Reset global state when server shuts down"""
+    global mentor_assigned, assigned_roles, active_connections, current_editor
+    mentor_assigned = False
+    assigned_roles.clear()
+    active_connections.clear()
+    current_editor.clear()
+
+@app.websocket("/ws/lobby/{client_id}")
+async def lobby_websocket_endpoint(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    logger.info(f"\n{'='*50}")
+    logger.info(f"Lobby WebSocket Connection - Client: {client_id}")
+    
+    try:
+        if client_id not in assigned_roles:
+            logger.warning(f"Client {client_id} not found in assigned_roles - closing connection")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+            
+        role = assigned_roles[client_id]
+        logger.info(f"Retrieved role for client {client_id}: {role}")
+        
+        # Only allow mentors to connect to lobby WebSocket
+        if role != "mentor":
+            logger.warning(f"Non-mentor {client_id} tried to connect to lobby - closing connection")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        
+        lobby_connections[websocket] = client_id
+        logger.info(f"Added mentor to lobby connections: {client_id}")
+        
+        while True:
+            try:
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                logger.info(f"Received lobby message from {client_id}: {message}")
+                
+                if message["type"] == "mentorRedirect":
+                    # Broadcast redirect to all connected students in lobby
+                    for conn in lobby_connections.keys():
+                        if conn != websocket:
+                            try:
+                                await conn.send_text(json.dumps({
+                                    "type": "redirect",
+                                    "blockId": message["blockId"]
+                                }))
+                            except Exception as e:
+                                logger.error(f"Error sending redirect to client: {e}")
+                    logger.info(f"Broadcasted redirect to block {message['blockId']} to all students")
+
+            except WebSocketDisconnect:
+                logger.info(f"Lobby WebSocket disconnected for {client_id}")
+                break
+            except Exception as e:
+                logger.error(f"Error handling lobby message: {e}")
+                continue
+
+    except WebSocketDisconnect:
+        logger.warning(f"Lobby WebSocket disconnected during setup for {client_id}")
+    except Exception as e:
+        logger.error(f"Error in lobby WebSocket connection for {client_id}: {e}")
+    finally:
+        if websocket in lobby_connections:
+            del lobby_connections[websocket]
+            logger.info(f"Removed {client_id} from lobby connections")
+        logger.info(f"{'='*50}\n")
 
 if __name__ == "__main__":
     import uvicorn

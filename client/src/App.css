@@ -41,10 +41,63 @@
 }
 
 .lobby-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.lobby-container h1 {
+  text-align: center;
+  margin-bottom: 40px;
+  color: #333;
+}
+
+.code-blocks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 20px;
+  padding: 20px;
+}
+
+.code-block-card {
+  background-color: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 20px;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.code-block-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.code-block-card h2 {
+  margin: 0 0 10px 0;
+  color: #333;
+  font-size: 1.2em;
+}
+
+.code-preview {
+  font-family: "Fira Code", monospace;
+  background-color: #f8f9fa;
+  padding: 10px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  color: #666;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.error-message {
+  color: #dc3545;
+  padding: 20px;
+  border: 1px solid #dc3545;
+  border-radius: 4px;
+  margin: 20px;
+  text-align: center;
 }
 
 .code-blocks-list {
@@ -68,54 +121,99 @@
 }
 
 .code-block-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.status-bar {
   display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 20px;
+  margin-bottom: 20px;
+  padding: 10px;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  flex-wrap: wrap;
 }
 
 .role-indicator {
   font-weight: bold;
-  padding: 10px;
-  border-radius: 5px;
-  background-color: #f0f0f0;
 }
 
 .student-count {
-  font-size: 0.9em;
   color: #666;
 }
 
-.code-editor {
-  width: 100%;
-  height: 400px;
-  padding: 15px;
-  font-family: monospace;
-  font-size: 16px;
-  border: 1px solid #ccc;
-  border-radius: 5px;
-  resize: none;
+.editor-container {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  overflow: hidden;
 }
 
-.error-message {
-  color: red;
-  padding: 20px;
-  border: 1px solid red;
-  border-radius: 5px;
-  margin: 20px;
+.code-editor {
+  min-height: 300px;
+  font-family: "Fira Code", monospace;
+}
+
+.code-editor.readonly {
+  background-color: #f8f9fa;
+  cursor: not-allowed;
+}
+
+.request-edit-btn {
+  padding: 8px 16px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.request-edit-btn:hover {
+  background-color: #0056b3;
 }
 
 .success-message {
-  color: green;
-  font-size: 1.2em;
+  margin-top: 20px;
   padding: 20px;
-  border: 1px solid green;
-  border-radius: 5px;
-  margin: 20px;
-  animation: fadeIn 0.5s;
+  background-color: #d4edda;
+  color: #155724;
+  border-radius: 4px;
+  text-align: center;
+  font-size: 1.2em;
+  animation: fadeIn 0.5s ease-in;
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.connecting-message {
+  color: #666;
+  font-style: italic;
+  font-size: 0.9em;
+}
+
+.role-display {
+  background-color: #f8f9fa;
+  padding: 10px 20px;
+  border-radius: 4px;
+  margin-bottom: 20px;
+  text-align: center;
+  font-size: 1.1em;
+}
+
+.role-value {
+  font-weight: bold;
+  color: #007bff;
+  margin-left: 5px;
 }
