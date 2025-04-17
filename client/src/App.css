@@ -211,20 +211,6 @@
   text-align: center;
   font-size: 1.2em;
   animation: fadeIn 0.5s ease-in;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-}
-
-.success-message::before {
-  content: "🎉";
-  font-size: 1.5em;
-}
-
-.success-message::after {
-  content: "🎉";
-  font-size: 1.5em;
 }
 
 @keyframes fadeIn {
@@ -267,4 +253,40 @@
   border-radius: 4px;
   border: 1px solid #ffeeba;
   font-size: 0.9em;
+}
+
+/* Solution Panel Styles */
+.solution-panel {
+  margin-top: 2rem;
+  padding: 1rem;
+  background-color: #1e1e1e;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.solution-panel h3 {
+  color: #fff;
+  margin-bottom: 1rem;
+  font-size: 1.2rem;
+}
+
+.solution-editor {
+  border: 1px solid #3d3d3d;
+}
+
+.solution-editor.readonly {
+  background-color: #2d2d2d !important;
+  cursor: default;
+}
+
+/* Ensure the solution panel has good spacing */
+.code-block-container {
+  padding-bottom: 2rem;
+}
+
+/* Add some visual separation between editor and solution */
+.editor-container {
+  margin-bottom: 1rem;
+  border-bottom: 2px solid #eee;
+  padding-bottom: 1rem;
 }

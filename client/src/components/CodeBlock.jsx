@@ -348,9 +348,30 @@ const CodeBlock = () => {
           className={`code-editor ${!canEdit ? "readonly" : ""}`}
         />
       </div>
+      {role === "mentor" && (
+        <div className="solution-panel">
+          <h3>Solution:</h3>
+          <Editor
+            value={codeBlock?.solution || ""}
+            highlight={(code) => highlight(code, languages.javascript)}
+            padding={10}
+            style={{
+              fontFamily: '"Fira code", "Fira Mono", monospace',
+              fontSize: 14,
+              backgroundColor: "#2d2d2d",
+              color: "#fff",
+              minHeight: "150px",
+              borderRadius: "4px",
+              marginTop: "20px",
+            }}
+            readOnly={true}
+            className="solution-editor readonly"
+          />
+        </div>
+      )}
       {isSolutionCorrect && (
         <div className="success-message">
-          🎉 Congratulations! You've found the correct solution! 🎉
+          😊 Congratulations! You've found the correct solution! 😊
         </div>
       )}
     </div>
