@@ -9,8 +9,12 @@ const Lobby = () => {
   const [role, setRole] = useState(null);
   const [clientId] = useState(() => {
     const stored = sessionStorage.getItem("clientId");
-    if (stored) return stored;
+    if (stored) {
+      console.log("Using existing client ID:", stored);
+      return stored;
+    }
     const newId = uuidv4();
+    console.log("Generated new client ID:", newId);
     sessionStorage.setItem("clientId", newId);
     return newId;
   });
@@ -22,6 +26,7 @@ const Lobby = () => {
   const connectWebSocket = () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
+    console.log("Connecting to lobby WebSocket with client ID:", clientId);
     const ws = new WebSocket(`ws://localhost:8000/ws/lobby/${clientId}`);
     wsRef.current = ws;
 
@@ -37,7 +42,12 @@ const Lobby = () => {
 
         if (data.type === "redirect") {
           console.log("Redirecting to code block:", data.blockId);
-          navigate(`/code/${data.blockId}`);
+          if (clientId) {
+            sessionStorage.setItem("clientId", clientId);
+            navigate(`/code/${data.blockId}`);
+          } else {
+            setError("No client ID available for redirect");
+          }
         }
       } catch (err) {
         console.error("Error handling WebSocket message:", err);
@@ -75,15 +85,17 @@ const Lobby = () => {
 
     const assignRole = async () => {
       try {
+        console.log("Requesting role assignment for client ID:", clientId);
         const response = await fetch(
           `http://localhost:8000/assign-role/${clientId}`
         );
         if (!response.ok) throw new Error("Failed to assign role");
         const data = await response.json();
+        console.log("Received role assignment:", data.role);
         setRole(data.role);
         sessionStorage.setItem("userRole", data.role);
 
-        // Connect WebSocket for both mentors and students
+        // Connect WebSocket after role assignment
         connectWebSocket();
       } catch (err) {
         setError("Failed to assign role");
@@ -91,6 +103,14 @@ const Lobby = () => {
       }
     };
 
+    // Clear any existing role and WebSocket connection
+    sessionStorage.removeItem("userRole");
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    // Fetch code blocks and assign role
     fetchCodeBlocks();
     assignRole();
 
@@ -101,10 +121,13 @@ const Lobby = () => {
         wsRef.current = null;
       }
     };
-  }, [clientId, navigate]);
+  }, [clientId]);
 
   const handleBlockClick = (blockId) => {
-    if (role !== "mentor") return;
+    if (role !== "mentor") {
+      console.log("Only mentors can select blocks");
+      return;
+    }
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       console.log("Mentor selected block:", blockId);
@@ -117,6 +140,7 @@ const Lobby = () => {
       navigate(`/code/${blockId}`);
     } else {
       setError("WebSocket connection is not available");
+      console.error("WebSocket not connected");
     }
   };
 
@@ -130,7 +154,7 @@ const Lobby = () => {
 
   return (
     <div className="lobby-container">
-      <h1>Code Blocks Lobby</h1>
+      <h1>Choose Code Block</h1>
       <div className="role-display">
         Your role:{" "}
         <span className={`role ${role}`}>{role || "loading..."}</span>

@@ -5,6 +5,7 @@ import Editor from "react-simple-code-editor";
 import { highlight, languages } from "prismjs";
 import "prismjs/components/prism-javascript";
 import "prismjs/themes/prism.css";
+import "prismjs/themes/prism-tomorrow.css";
 
 const CodeBlock = () => {
   const [codeBlock, setCodeBlock] = useState(null);
@@ -22,11 +23,33 @@ const CodeBlock = () => {
   const { blockId } = useParams();
   const navigate = useNavigate();
 
+  const handleBackToLobby = () => {
+    if (role === "mentor") {
+      if (ws.current) {
+        ws.current.send(
+          JSON.stringify({
+            type: "mentorLeaving",
+            blockId: blockId,
+          })
+        );
+        ws.current.close();
+      }
+      setCodeBlock(null);
+      setStudentCount(0);
+      setCanEdit(false);
+      setIsConnected(false);
+      navigate("/");
+    }
+  };
+
   const connectWebSocket = () => {
     const clientId = sessionStorage.getItem("clientId");
+    console.log("Attempting to connect WebSocket with client ID:", clientId);
+
     if (!clientId) {
-      console.error("No client ID found");
-      navigate("/");
+      console.error("No client ID found in session storage");
+      setError("Session expired. Please return to lobby.");
+      setTimeout(() => navigate("/"), 2000);
       return;
     }
 
@@ -41,25 +64,52 @@ const CodeBlock = () => {
     ws.current.onopen = () => {
       console.log("WebSocket connected successfully");
       setIsConnected(true);
+      setError("");
       reconnectAttempts.current = 0;
-    };
-
-    ws.current.onclose = (event) => {
-      console.log("WebSocket disconnected", event);
-      setIsConnected(false);
-
-      // Only attempt to reconnect if we haven't exceeded max attempts
-      if (reconnectAttempts.current < maxReconnectAttempts) {
-        console.log(`Reconnecting... Attempt ${reconnectAttempts.current + 1}`);
-        reconnectAttempts.current++;
-        setTimeout(connectWebSocket, 1000);
-      } else if (role === "student") {
-        navigate("/");
-      }
     };
 
     ws.current.onerror = (error) => {
       console.error("WebSocket error:", error);
+      setError("Connection error. Attempting to reconnect...");
+      setIsConnected(false);
+
+      if (reconnectAttempts.current < maxReconnectAttempts) {
+        console.log(
+          `Reconnect attempt ${
+            reconnectAttempts.current + 1
+          } of ${maxReconnectAttempts}`
+        );
+        setTimeout(() => {
+          reconnectAttempts.current += 1;
+          connectWebSocket();
+        }, 2000);
+      } else {
+        setError(
+          "Unable to connect. Please refresh the page or return to lobby."
+        );
+        console.error("Max reconnection attempts reached");
+      }
+    };
+
+    ws.current.onclose = () => {
+      console.log("WebSocket connection closed");
+      setIsConnected(false);
+
+      if (reconnectAttempts.current < maxReconnectAttempts) {
+        console.log(
+          `Connection closed. Reconnect attempt ${
+            reconnectAttempts.current + 1
+          } of ${maxReconnectAttempts}`
+        );
+        setTimeout(() => {
+          reconnectAttempts.current += 1;
+          connectWebSocket();
+        }, 2000);
+      } else {
+        setError(
+          "Connection lost. Please refresh the page or return to lobby."
+        );
+      }
     };
 
     ws.current.onmessage = (event) => {
@@ -74,7 +124,10 @@ const CodeBlock = () => {
           case "role":
             setRole(data.role);
             setStudentCount(data.studentCount || 0);
-            setCanEdit(data.canEdit);
+            setCanEdit(data.role === "student" && data.canEdit);
+            break;
+          case "studentCount":
+            setStudentCount(data.count);
             break;
           case "mentorLeft":
             if (role === "student") {
@@ -82,7 +135,7 @@ const CodeBlock = () => {
             }
             break;
           case "editorChange":
-            setCanEdit(data.canEdit);
+            setCanEdit(role === "student" && data.canEdit);
             break;
           default:
             console.log("Unknown message type:", data.type);
@@ -94,39 +147,74 @@ const CodeBlock = () => {
   };
 
   useEffect(() => {
-    let mounted = true;
-
     const fetchCodeBlock = async () => {
       try {
         const response = await axios.get(
           `http://localhost:8000/code-blocks/${blockId}`
         );
-        if (mounted) {
+        if (response.data) {
           setCodeBlock(response.data);
         }
       } catch (err) {
-        if (mounted) {
-          console.error("Failed to load code block:", err);
-          setError("Failed to load code block. Please try again later.");
-        }
+        console.error("Failed to load code block:", err);
+        setError("Failed to load code block. Please try again later.");
       }
     };
 
-    console.log("CodeBlock component mounted", {
-      blockId,
-      role: sessionStorage.getItem("userRole"),
-    });
+    const verifyRole = async () => {
+      const clientId = sessionStorage.getItem("clientId");
+      const storedRole = sessionStorage.getItem("userRole");
 
-    fetchCodeBlock();
-    connectWebSocket();
+      if (!clientId || !storedRole) {
+        console.error("No client ID or role found");
+        setError("Session expired. Please return to lobby.");
+        setTimeout(() => navigate("/"), 2000);
+        return false;
+      }
+
+      try {
+        const response = await fetch(
+          `http://localhost:8000/my-role/${clientId}`
+        );
+        if (!response.ok) {
+          throw new Error("Failed to verify role");
+        }
+        const data = await response.json();
+        if (data.role !== storedRole) {
+          console.error("Role mismatch:", {
+            stored: storedRole,
+            server: data.role,
+          });
+          setError("Role verification failed. Please return to lobby.");
+          setTimeout(() => navigate("/"), 2000);
+          return false;
+        }
+        return true;
+      } catch (err) {
+        console.error("Error verifying role:", err);
+        setError("Failed to verify role. Please return to lobby.");
+        setTimeout(() => navigate("/"), 2000);
+        return false;
+      }
+    };
+
+    const init = async () => {
+      const isRoleValid = await verifyRole();
+      if (isRoleValid) {
+        await fetchCodeBlock();
+        connectWebSocket();
+      }
+    };
+
+    init();
 
     return () => {
-      mounted = false;
       if (ws.current) {
+        console.log("Component unmounting, closing WebSocket");
         ws.current.close();
       }
     };
-  }, [blockId, navigate, role]);
+  }, [blockId, navigate]);
 
   const handleCodeChange = (newCode) => {
     if (!canEdit) return;
@@ -142,7 +230,7 @@ const CodeBlock = () => {
       );
     }
 
-    if (newCode === codeBlock?.solution) {
+    if (newCode.trim() === codeBlock?.solution?.trim()) {
       setIsSolutionCorrect(true);
     } else {
       setIsSolutionCorrect(false);
@@ -173,7 +261,14 @@ const CodeBlock = () => {
 
   return (
     <div className="code-block-container">
-      <h1>{codeBlock.title}</h1>
+      <div className="header-bar">
+        <h1>{codeBlock?.title || "Code Block"}</h1>
+        {role === "mentor" && (
+          <button onClick={handleBackToLobby} className="back-to-lobby-btn">
+            Back to Lobby
+          </button>
+        )}
+      </div>
       <div className="status-bar">
         <div className="role-indicator">
           You are: {isConnected ? role : "connecting..."}
@@ -191,9 +286,15 @@ const CodeBlock = () => {
           </button>
         )}
       </div>
+      {role === "student" && (
+        <div className="instruction-note">
+          Note: Remove the comments and replace with your solution to see if it
+          matches!
+        </div>
+      )}
       <div className="editor-container">
         <Editor
-          value={codeBlock.template}
+          value={codeBlock?.template || ""}
           onValueChange={handleCodeChange}
           highlight={(code) => highlight(code, languages.javascript)}
           padding={10}
