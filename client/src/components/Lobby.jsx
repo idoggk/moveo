@@ -43,6 +43,12 @@ const Lobby = () => {
         if (data.type === "redirect") {
           console.log("Redirecting to code block:", data.blockId);
           if (clientId) {
+            // Ensure role is stored before redirect
+            const currentRole = sessionStorage.getItem("userRole");
+            if (!currentRole) {
+              console.log("Storing role before redirect:", role);
+              sessionStorage.setItem("userRole", role);
+            }
             sessionStorage.setItem("clientId", clientId);
             navigate(`/code/${data.blockId}`);
           } else {

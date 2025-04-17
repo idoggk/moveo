@@ -165,11 +165,38 @@ const CodeBlock = () => {
       const clientId = sessionStorage.getItem("clientId");
       const storedRole = sessionStorage.getItem("userRole");
 
-      if (!clientId || !storedRole) {
-        console.error("No client ID or role found");
+      console.log("Verifying role with stored values:", {
+        clientId,
+        storedRole,
+      });
+
+      if (!clientId) {
+        console.error("No client ID found");
         setError("Session expired. Please return to lobby.");
         setTimeout(() => navigate("/"), 2000);
         return false;
+      }
+
+      if (!storedRole) {
+        console.log("No stored role, attempting to fetch from server");
+        try {
+          const response = await fetch(
+            `http://localhost:8000/my-role/${clientId}`
+          );
+          if (!response.ok) {
+            throw new Error("Failed to fetch role");
+          }
+          const data = await response.json();
+          console.log("Fetched role from server:", data.role);
+          sessionStorage.setItem("userRole", data.role);
+          setRole(data.role);
+          return true;
+        } catch (err) {
+          console.error("Error fetching role:", err);
+          setError("Failed to verify role. Please return to lobby.");
+          setTimeout(() => navigate("/"), 2000);
+          return false;
+        }
       }
 
       try {
@@ -180,14 +207,18 @@ const CodeBlock = () => {
           throw new Error("Failed to verify role");
         }
         const data = await response.json();
+        console.log("Verifying roles match:", {
+          stored: storedRole,
+          server: data.role,
+        });
         if (data.role !== storedRole) {
           console.error("Role mismatch:", {
             stored: storedRole,
             server: data.role,
           });
-          setError("Role verification failed. Please return to lobby.");
-          setTimeout(() => navigate("/"), 2000);
-          return false;
+          // Update the stored role if it doesn't match
+          sessionStorage.setItem("userRole", data.role);
+          setRole(data.role);
         }
         return true;
       } catch (err) {
