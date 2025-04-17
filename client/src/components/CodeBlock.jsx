@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import axios from "axios";
 import Editor from "react-simple-code-editor";
@@ -6,6 +6,9 @@ import { highlight, languages } from "prismjs";
 import "prismjs/components/prism-javascript";
 import "prismjs/themes/prism.css";
 import "prismjs/themes/prism-tomorrow.css";
+
+const BASE_WS_URL = "ws://localhost:8000";
+const BASE_API_URL = "http://localhost:8000";
 
 const CodeBlock = () => {
   const [codeBlock, setCodeBlock] = useState(null);
@@ -20,13 +23,13 @@ const CodeBlock = () => {
   const ws = useRef(null);
   const reconnectAttempts = useRef(0);
   const maxReconnectAttempts = 3;
+  const reconnectTimeoutRef = useRef(null);
   const { blockId } = useParams();
   const navigate = useNavigate();
 
   const handleBackToLobby = () => {
     if (ws.current) {
       if (role === "mentor") {
-        console.log("Mentor leaving - sending notification to server");
         ws.current.send(
           JSON.stringify({
             type: "mentorLeaving",
@@ -34,7 +37,6 @@ const CodeBlock = () => {
           })
         );
       }
-      // Close with code 1000 to indicate clean closure
       ws.current.close(1000, "User leaving");
       ws.current = null;
     }
@@ -45,168 +47,135 @@ const CodeBlock = () => {
     navigate("/");
   };
 
-  const connectWebSocket = () => {
+  const connectWebSocket = useCallback(() => {
     const clientId = sessionStorage.getItem("clientId");
-    console.log("Attempting to connect WebSocket with client ID:", clientId);
 
     if (!clientId) {
-      console.error("No client ID found in session storage");
       setError("Session expired. Please return to lobby.");
       setTimeout(() => navigate("/"), 2000);
       return;
     }
 
-    // If we already have an open connection, don't create a new one
     if (ws.current?.readyState === WebSocket.OPEN) {
-      console.log("WebSocket already connected and open");
-      return;
-    }
-
-    // If we have a connection that's closing or in an intermediate state, wait for it
-    if (ws.current && ws.current.readyState !== WebSocket.CLOSED) {
-      console.log("WebSocket connection in progress, waiting...");
-      return;
-    }
-
-    console.log("Connecting WebSocket...", { blockId, clientId });
-    ws.current = new WebSocket(`ws://localhost:8000/ws/${blockId}/${clientId}`);
-
-    ws.current.onopen = () => {
-      console.log("WebSocket connected successfully");
       setIsConnected(true);
-      setError("");
-      reconnectAttempts.current = 0;
-    };
+      return;
+    }
 
-    ws.current.onerror = (error) => {
-      console.error("WebSocket error:", error);
-      setError("Connection error. Attempting to reconnect...");
-      setIsConnected(false);
-    };
+    // Clear any existing connection
+    if (ws.current) {
+      ws.current.close();
+      ws.current = null;
+    }
 
-    ws.current.onclose = (event) => {
-      console.log("WebSocket connection closed", event.code, event.reason);
-      setIsConnected(false);
+    try {
+      ws.current = new WebSocket(`${BASE_WS_URL}/ws/${blockId}/${clientId}`);
 
-      // Don't reconnect if we're intentionally closing (code 1000)
-      if (event.code === 1000) {
-        console.log("Clean WebSocket closure, not reconnecting");
-        return;
-      }
+      ws.current.onopen = () => {
+        setIsConnected(true);
+        setError("");
+        reconnectAttempts.current = 0;
+      };
 
-      if (reconnectAttempts.current < maxReconnectAttempts) {
-        console.log(
-          `Connection closed. Reconnect attempt ${
-            reconnectAttempts.current + 1
-          } of ${maxReconnectAttempts}`
-        );
-        setTimeout(() => {
-          reconnectAttempts.current += 1;
-          connectWebSocket();
-        }, 2000);
-      } else {
-        setError(
-          "Connection lost. Please refresh the page or return to lobby."
-        );
-      }
-    };
+      ws.current.onerror = () => {
+        setError("Connection error. Attempting to reconnect...");
+        setIsConnected(false);
+      };
 
-    ws.current.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        console.log("Received WebSocket message:", data);
+      ws.current.onclose = (event) => {
+        setIsConnected(false);
 
-        switch (data.type) {
-          case "codeUpdate":
-            setCodeBlock((prev) => ({ ...prev, template: data.code }));
-            break;
-          case "role":
-            setRole(data.role);
-            setStudentCount(data.studentCount || 0);
-            setCanEdit(data.role === "student" && data.canEdit);
-            break;
-          case "studentCount":
-            setStudentCount(data.count);
-            break;
-          case "mentorLeft":
-            console.log("Mentor left notification received");
-            // Handle mentor leaving regardless of stored role
-            // Clean up state
-            setCodeBlock(null);
-            setStudentCount(0);
-            setCanEdit(false);
-            setIsConnected(false);
-            // Close WebSocket first with clean closure code
-            if (ws.current) {
-              ws.current.close(1000, "Mentor left");
-              ws.current = null;
-            }
-            // Clear role and client ID from session storage
-            sessionStorage.clear();
-            // Navigate back to lobby and prevent going back
-            navigate("/", { replace: true });
-            break;
-          case "editorChange":
-            setCanEdit(role === "student" && data.canEdit);
-            break;
-          default:
-            console.log("Unknown message type:", data.type);
+        if (event.code === 1000) return;
+
+        if (reconnectAttempts.current < maxReconnectAttempts) {
+          reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectAttempts.current += 1;
+            connectWebSocket();
+          }, 1000 * Math.min(reconnectAttempts.current + 1, 5));
+        } else {
+          setError(
+            "Connection lost. Please refresh the page or return to lobby."
+          );
         }
-      } catch (err) {
-        console.error("Error parsing WebSocket message:", err);
-      }
-    };
-  };
+      };
+
+      ws.current.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          switch (data.type) {
+            case "codeUpdate":
+              setCodeBlock((prev) => ({ ...prev, template: data.code }));
+              break;
+            case "role":
+              setRole(data.role);
+              setStudentCount(data.studentCount || 0);
+              setCanEdit(data.role === "student" && data.canEdit);
+              break;
+            case "studentCount":
+              setStudentCount(data.count);
+              break;
+            case "mentorLeft":
+              setCodeBlock(null);
+              setStudentCount(0);
+              setCanEdit(false);
+              setIsConnected(false);
+              if (ws.current) {
+                ws.current.close(1000, "Mentor left");
+                ws.current = null;
+              }
+              sessionStorage.clear();
+              navigate("/", { replace: true });
+              break;
+            case "editorChange":
+              setCanEdit(role === "student" && data.canEdit);
+              break;
+          }
+        } catch (err) {
+          setError("Error processing server message");
+        }
+      };
+    } catch (err) {
+      setError("Failed to establish connection");
+      setIsConnected(false);
+    }
+  }, [blockId, navigate, role]);
 
   useEffect(() => {
-    let isActive = true; // Flag to prevent operations after unmount
+    let isActive = true;
 
     const fetchCodeBlock = async () => {
       try {
         const response = await axios.get(
-          `http://localhost:8000/code-blocks/${blockId}`
+          `${BASE_API_URL}/code-blocks/${blockId}`
         );
-        if (response.data) {
+        if (response.data && isActive) {
           setCodeBlock(response.data);
         }
       } catch (err) {
-        console.error("Failed to load code block:", err);
-        setError("Failed to load code block. Please try again later.");
+        if (isActive) {
+          setError("Failed to load code block. Please try again later.");
+        }
       }
     };
 
     const verifyRole = async () => {
       const clientId = sessionStorage.getItem("clientId");
-      const storedRole = sessionStorage.getItem("userRole");
-
-      console.log("Verifying role with stored values:", {
-        clientId,
-        storedRole,
-      });
 
       if (!clientId) {
-        console.error("No client ID found");
         setError("Session expired. Please return to lobby.");
         setTimeout(() => navigate("/"), 2000);
         return false;
       }
 
       try {
-        const response = await fetch(
-          `http://localhost:8000/my-role/${clientId}`
-        );
-        if (!response.ok) {
-          throw new Error("Failed to verify role");
-        }
-        const data = await response.json();
+        const response = await fetch(`${BASE_API_URL}/my-role/${clientId}`);
+        if (!response.ok) throw new Error("Failed to verify role");
 
-        // Always update role from server
-        console.log("Setting role from server:", data.role);
+        const data = await response.json();
         sessionStorage.setItem("userRole", data.role);
         setRole(data.role);
         return true;
       } catch (err) {
-        console.error("Error verifying role:", err);
         setError("Failed to verify role. Please return to lobby.");
         setTimeout(() => navigate("/"), 2000);
         return false;
@@ -217,34 +186,28 @@ const CodeBlock = () => {
       if (!isActive) return;
 
       const isRoleValid = await verifyRole();
+      if (!isActive || !isRoleValid) return;
+
+      await fetchCodeBlock();
       if (!isActive) return;
 
-      if (isRoleValid) {
-        await fetchCodeBlock();
-        if (!isActive) return;
-
-        // Only connect WebSocket if we don't have an active connection
-        if (!ws.current || ws.current.readyState === WebSocket.CLOSED) {
-          connectWebSocket();
-        }
-      }
+      connectWebSocket();
     };
 
     init();
 
-    // Cleanup function
     return () => {
       isActive = false;
-      console.log("Component unmounting - cleaning up");
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
       if (ws.current) {
-        console.log("Closing WebSocket connection");
         ws.current.close(1000, "Component unmounting");
         ws.current = null;
       }
-      // Clear any reconnection timeouts
       reconnectAttempts.current = maxReconnectAttempts;
     };
-  }, [blockId, navigate]);
+  }, [blockId, navigate, connectWebSocket]);
 
   const handleCodeChange = (newCode) => {
     if (!canEdit) return;
@@ -273,7 +236,6 @@ const CodeBlock = () => {
       !canEdit &&
       ws.current?.readyState === WebSocket.OPEN
     ) {
-      console.log("Requesting edit permission");
       ws.current.send(
         JSON.stringify({
           type: "requestEdit",
